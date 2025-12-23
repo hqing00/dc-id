@@ -29,6 +29,8 @@ uploaded_files = st.file_uploader(
     accept_multiple_files=True
 )
 
+start_cleaning =  st.button("START")
+
 def load_and_combine(files):
     dfs = []
     for f in files:
@@ -36,7 +38,7 @@ def load_and_combine(files):
         dfs.append(df)
     return pd.concat(dfs, ignore_index=True)
 
-if uploaded_files:
+if uploaded_files and start_cleaning:
     if len(uploaded_files) > 2:
         st.error("Please upload **maximum 2 files**.")
         st.stop()
@@ -124,17 +126,9 @@ if uploaded_files:
         'Journal', 'Transaction Description', 'Amount', 'Balance'
     ]
 
-    clean_df = clean_df[
-        ~clean_df[cols_to_check]
-        .apply(lambda x: x.astype(str).str.strip().eq('').all(), axis=1)
-    ]
-
-    clean_df = clean_df[
-        ~clean_df.apply(
-            lambda row: row.astype(str).str.contains("Account Statement", case=False).any(),
-            axis=1
-        )
-    ]
+    clean_df = clean_df[~clean_df[cols_to_check].apply(lambda x: x.astype(str).str.strip().eq('').all(), axis=1)]
+    clean_df = clean_df[~clean_df.apply(lambda row: row.astype(str).str.contains("Account Statement", case=False, na=False).any(), axis=1)]
+    clean_df = clean_df[~clean_df.apply(lambda row: row.astype(str).str.strip().eq('').all(), axis=1)]
 
     header_keywords = [
         'posting date', 'effective date', 'branch',
@@ -152,10 +146,12 @@ if uploaded_files:
         )
     ]
 
+    # --- Merge spill-over rows safely with correct balance calculation ---
+
     merged_rows = []
     prev = None
 
-    for _, row in clean_df.iterrows():
+    for idx, row in clean_df.iterrows():
         is_spill = (
             str(row['Posting Date']).strip() == '' and
             str(row['Effective Date']).strip() == '' and
@@ -168,12 +164,21 @@ if uploaded_files:
         )
 
         if is_spill and prev is not None:
-            if str(row['Branch']).strip():
-                prev['Branch'] += " " + str(row['Branch'])
-            if str(row['Transaction Description']).strip():
-                prev['Transaction Description'] += " " + str(row['Transaction Description'])
-            if str(row['Balance']).strip():
-                prev['Balance'] += str(row['Balance'])
+            if str(row['Branch']).strip() != '':
+                prev['Branch'] = (str(prev['Branch']) + " " + str(row['Branch'])).strip()
+            if str(row['Transaction Description']).strip() != '':
+                prev['Transaction Description'] = (
+                    str(prev['Transaction Description']) + " " + str(row['Transaction Description'])
+                ).strip()
+            if str(row['Balance']).strip() != '':
+                prev_bal = str(prev['Balance']).replace(",", "").split(".")[0].strip()
+                spill_bal = str(row['Balance']).replace(",", "").split(".")[0].strip()
+                if prev_bal.isdigit() and spill_bal.isdigit():
+                    new_balance_int = prev_bal + spill_bal
+                    prev['Balance'] = f"{int(new_balance_int):,}.00"
+                else:
+                    prev['Balance'] = str(prev['Balance']).strip() + str(row['Balance']).strip()
+            continue
         else:
             merged_rows.append(row.copy())
             prev = merged_rows[-1]
@@ -181,8 +186,8 @@ if uploaded_files:
     clean_df = pd.DataFrame(merged_rows)
 
     # --- Cleaned preview only ---
-    st.subheader("✅ Cleaned Data Preview (first 100 rows)")
-    st.dataframe(clean_df.head(100), use_container_width=True)
+    st.subheader("✅ Cleaned Data Preview (first 500 rows)")
+    st.dataframe(clean_df.head(500), use_container_width=True)
     st.caption(f"Total rows after cleaning: {len(clean_df)}")
 
     # --- Download button ---
@@ -193,6 +198,9 @@ if uploaded_files:
         "Cleaned_Data.csv",
         "text/csv"
     )
+
+elif uploaded_files and not start_cleaning:
+    st.info("Click the **START** button to begin data cleaning")
 
 else:
     st.info("Please upload at least 1 CSV file.")
